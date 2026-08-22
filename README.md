@@ -1,128 +1,111 @@
-# intel-system — Phases 0–1
+# intel-system
 
-Always-on stack: Postgres (+pgvector) · Redis · Telegram bot with structured
-JSON logging and an external dead-man's switch.
+A self-hosted Telegram bot that polls RSS, Reddit and the NVD CVE API, deduplicates and scores what it finds with a hand-tuned heuristic, and pushes one daily digest to a single operator.
 
-**Phase 1 adds:** three collectors (RSS, Reddit, NVD/CVE) covering both the
-cryptocurrency and cryptography-proper tracks, a normaliser with exact-hash
-dedup, naive Stage-1 triage that retains its kills for audit, and a P2 daily
-brief pushed to Telegram. Done when the brief arrives unattended for 7 days.
+```
+ RSS x11 ─┐
+ Reddit x5├─► collectors ──► normalise ──► triage ──► Postgres 16
+ NVD CVE ─┘  (cursor +      (content-      (4 weights,   (events: kept
+              circuit        hash dedup,    threshold     AND killed)
+              breaker)       title-hash     0.45)              │
+                             novelty)                          ▼
+                                                     digest ──► Telegram
+                                                    (07:00 UTC, chunked
+                                                     to 4096 chars)
+```
 
-## Prerequisites (one-time)
+Everything above runs. Nothing above has run unattended in production for a week, which was my own exit criterion — see [Status](#status).
 
-1. **Telegram bot**: message [@BotFather](https://t.me/BotFather), `/newbot`,
-   copy the token.
-2. **Your operator id**: message [@userinfobot](https://t.me/userinfobot),
-   copy the numeric id. The bot ignores all other ids.
-3. **Dead-man's switch** (recommended): create a free check at
-   [healthchecks.io](https://healthchecks.io) with period 10 min / grace 5 min,
-   copy the ping URL. Alerts fire from their infrastructure when the System
-   goes quiet — a wedged VPS can't report itself dead.
-4. **VPS**: Hetzner CPX21/CPX31, Ubuntu 24.04. Harden before anything else:
-   ```bash
-   adduser ops && usermod -aG sudo,docker ops   # after installing docker
-   # SSH keys only: set PasswordAuthentication no in /etc/ssh/sshd_config
-   ufw default deny incoming && ufw allow OpenSSH && ufw enable
-   apt install -y fail2ban unattended-upgrades
-   ```
-   Install Docker via [get.docker.com](https://get.docker.com). Tailscale for
-   admin access is worth the five minutes.
+## Why it exists
 
-## Deploy
+I wanted one place that watched the crypto and cryptography feeds I actually care about — exchange/protocol news on one side, CVEs and primitive breaks on the other — without me opening fifteen tabs a day. Aggregators either drown you or editorialise. The interesting engineering problem was never fetching; it was deciding what deserves a push notification, and being able to audit that decision afterwards. So killed items stay in the database with their scores and reasons attached, because a filter you can't inspect is a filter you can't tune.
+
+## How it works
+
+Three collectors implement one small interface: take a cursor, return items plus the next cursor. RSS uses feedparser against 11 sources (CoinDesk, The Block, Bitcoin Optech, Ethereum blog, SEC, FCA, NIST CSRC, Project Zero, Schneier, NCSC, arXiv); Reddit uses app-only OAuth across 5 subs; NVD uses the v2.0 API with a keyword pre-filter, because "vulnerability" matches nearly every CVE and the useful gate is named primitives and libraries. Each runs on its own supervised asyncio task with its own interval. Repeated failures multiply that interval by 2^failures up to 12x, so a dead source stops hammering the API and stops flooding the logs.
+
+Normalisation does two hashes: content hash for exact dedup, title hash for a naive three-day novelty check. Triage is a weighted sum of four factors — materiality 0.35, reputation 0.25, novelty 0.20, specificity 0.20 — kept above 0.45. Those five constants are hand-picked, not learned. I picked them, ran `scripts/selftest.py`, and adjusted until the kills looked right on real items. That's the honest provenance.
+
+The trade-off I took deliberately: no embeddings in stage 1. Exact title hashing misses paraphrased reposts, which is the known ceiling here, and pgvector is provisioned for the fix — but a cheap explainable score that I can read in a log line beat a similarity model I'd have to debug at 3am. Frontier-model triage was always meant to be stage 2, gated behind a stage-1 that already filters most of the volume.
+
+Postgres holds everything; migrations are numbered SQL applied idempotently at startup. Redis is in the compose file and is **not used by any application code** — it's dead weight I provisioned for a queue I never built, and it should probably be deleted.
+
+## Quickstart
+
+Docker is required. The Dockerfile pins Python 3.12; running bare-metal on a newer host Python (3.14) breaks the asyncpg and pydantic-core wheel builds, so don't.
+
+First get two things: a bot token from [@BotFather](https://t.me/BotFather) (`/newbot`), and your numeric Telegram user id from [@userinfobot](https://t.me/userinfobot). The bot ignores every id except that one.
 
 ```bash
-git clone <repo> && cd intel-system
-cp .env.example .env   # fill in token, operator id, db password, ping URL
+git clone <this-repo> intel-system && cd intel-system
+cp .env.example .env
+```
+
+Edit `.env` and set three values — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_OPERATOR_ID`, `POSTGRES_PASSWORD`. Everything else has a working default; Reddit credentials are optional and RSS + NVD run without them.
+
+```bash
 docker compose up -d --build
 docker compose logs -f bot
 ```
 
-You should receive "System online" on Telegram within a few seconds.
+You should get "System online" on Telegram within a few seconds. Then message the bot `/status`, `/sources`, `/kills`, or `/digest` to build a brief immediately rather than waiting for `DIGEST_HOUR_UTC`.
 
-## Verify Phase 0 exit criteria
-
-- [ ] `/start` and `/status` answer on Telegram; `/status` shows postgres ok.
-- [ ] `docker compose logs bot` shows JSON lines including `heartbeat_ping`.
-- [ ] healthchecks.io shows the check up; `docker compose stop db` flips it
-      to down within ~15 min (then `start` it again).
-- [ ] `sudo reboot` — the stack comes back and the bot re-announces itself
-      with no manual action.
-
-## Backups
+Offline logic check — no network, no database, 12 assertions, passing as of this commit:
 
 ```bash
-crontab -e   # as the ops user
-15 3 * * * cd /home/ops/intel-system && ./scripts/backup.sh >> backups/backup.log 2>&1
+docker compose run --rm --no-deps -e PYTHONPATH=/home/app \
+  -v "$PWD/scripts:/home/app/scripts:ro" bot python scripts/selftest.py
 ```
 
-Then ship `backups/` off-box (rclone to any object storage). Local-only
-backups die with the disk.
-
-## Phase 1: sources, triage, and the daily brief
-
-### Configuring sources
-
-Everything is in [app/feeds.yaml](app/feeds.yaml) — edit and restart the bot.
-- **rss / reddit**: `name`, `url` (rss only), `reputation` (0–1 trust prior).
-- **keywords**: drive materiality scoring and entity tagging for RSS/Reddit.
-- **nvd_keywords**: a *separate* gate for CVEs. Generic words like
-  "vulnerability" match nearly every CVE, so NVD is scoped to named primitives
-  and libraries (OpenSSL, TLS, RSA, post-quantum…). Prune this to your stack.
-
-Reddit needs `REDDIT_CLIENT_ID`/`SECRET` (a free "script" app); leave them
-blank and RSS + NVD still run. X/Twitter is deliberately absent — its API
-can't sustain continuous monitoring within budget, and the swappable collector
-design means it can be added later if a measured recall gap points at it.
-
-### How triage works (Phase 1, naive)
-
-Each item scores 0–1 on four weighted factors — materiality (keyword/entity
-hits), source reputation, novelty (naive: unseen title in 3 days), and
-specificity — and is **kept** if it clears `TRIAGE_KEEP_THRESHOLD` (default
-0.45). Killed items are *retained* in the `events` table (`triage_kept=false`)
-so you can audit what the filter discards. Phase 2 replaces novelty with
-embeddings and adds the expensive Stage-2 frontier scorer.
-
-### Bot commands
-
-- `/status` — version, uptime, Postgres, schema, dead-man switch.
-- `/sources` — per-collector health (last run, status, failure count).
-- `/kills` — kept vs killed counts over 24h, and the kill rate.
-- `/digest` — build and send the daily brief right now.
-
-### Verify Phase 1 exit criteria
-
-- [ ] `/sources` shows RSS + NVD (+ Reddit if configured) running with
-      `✅` and recent timestamps.
-- [ ] `/digest` produces a brief with real, clickable items.
-- [ ] The brief arrives on its own each day at `DIGEST_HOUR_UTC` for 7 days.
-- [ ] `/kills` shows a non-trivial kill rate (triage is actually filtering).
-
-### Offline / integration tests
+Integration test against live feeds and a real Postgres (start the stack first):
 
 ```bash
-# Pure logic (no network, no db):
-docker run --rm -e PYTHONPATH=/home/app -e TELEGRAM_BOT_TOKEN=x \
-  -e TELEGRAM_OPERATOR_ID=1 -e DATABASE_URL=postgresql://x@x/x \
-  -v "$PWD/scripts:/home/app/scripts:ro" intel-system-bot python scripts/selftest.py
-
-# Live feeds + real Postgres (start db first via compose):
-docker compose run --rm --no-deps -e PYTHONPATH=/home/app \
+docker compose run --rm -e PYTHONPATH=/home/app \
   -v "$PWD/scripts:/home/app/scripts:ro" bot python scripts/itest.py
 ```
 
-## Layout
+Sources live in `app/feeds.yaml` — edit and restart the bot. Nightly backups are `scripts/backup.sh` (pg_dump via compose, prunes past 14 days); wire it to cron yourself and ship the output off-box.
 
-```
-app/               bot, config, db pool, heartbeat, logging
-app/collectors/    rss, reddit, nvd + base (circuit breaker in scheduler)
-app/migrations/    numbered SQL, applied idempotently at startup
-app/feeds.yaml     source + keyword config (edit this)
-app/{normalise,triage,notifier,scheduler,digest,store}.py
-db/init/           first-boot bootstrap (fresh volumes only)
-scripts/           backup.sh, selftest.py, itest.py
-docker-compose.yml
-```
+## Status
 
-Next (Phase 2): two-stage triage with embeddings, near-duplicate clustering,
-and one-tap useful/noise feedback buttons on every alert.
+1,362 lines of Python, one author, never deployed in anger.
+
+Working, and verified by a real self-test run (12/12 assertions):
+
+- Entity extraction (CVE regex, cashtag regex, keyword matching), content-hash dedup, title-hash novelty, and the triage scoring formula.
+
+Working, exercised against real public APIs but not under a long-running deploy:
+
+- All three collectors with cursor/pagination handling, circuit breaker and exponential backoff, idempotent numbered migrations, digest formatting with HTML escaping and 4096-character chunking, structured JSON logging, operator-only access filter.
+
+Partial or unverified:
+
+- `scripts/itest.py` is a real integration test (fetch counts, dedup, migration version, digest query) but needs live Postgres and was not run during this audit.
+- The 7-day unattended soak test this project sets for itself has not been completed by anyone.
+- Redis is provisioned by compose and used by nothing.
+- A `feedback` column exists in the schema; nothing writes to it.
+- pgvector extension is created; no vector column is used.
+
+Not built:
+
+- Near-duplicate clustering by embedding, stage-2 frontier-model triage, entity resolution and an alias store. All deferred to phase 2/3 and marked as such in the code.
+- WhatsApp notifier: the class exists and raises `NotImplementedError` in `__init__`. It is a stub.
+- X/Twitter collector: deliberately absent. The API pricing doesn't sustain continuous monitoring inside my budget, and the collector interface is small enough to add one later if a measured recall gap justifies it.
+- No web UI. The bot is the entire interface.
+
+## Stack
+
+| Choice | Why, over the obvious alternative |
+| --- | --- |
+| Postgres 16 + pgvector | One store for events, cursors and (eventually) embeddings. Over SQLite, because pgvector and concurrent collector writes both want a server. |
+| asyncpg | Raw SQL and a connection pool. Over SQLAlchemy, because the schema is four tables and an ORM would be the largest dependency in the project. |
+| aiogram 3.13 | Native asyncio, so the bot shares one event loop with the collector tasks. Over python-telegram-bot, which I'd have had to bridge. |
+| feedparser | RSS/Atom parsing is a swamp of malformed XML. Not writing that. |
+| structlog | JSON lines out of the box, so `docker compose logs` is greppable without a log stack. |
+| pydantic-settings | Config validated at boot, so a missing token fails at startup rather than on the first send. |
+| Docker Compose | Single-VPS deploy, three services. Over Kubernetes, obviously. |
+| Redis 7 | No reason that survived contact with the code. Should be removed. |
+
+## Licence
+
+MIT.
