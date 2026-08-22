@@ -10,8 +10,9 @@ from app.feeds_config import high_signal, load
 from app.log import log
 from app import triage
 
-# Circuit breaker: after repeated failures, back off up to this multiple of the
-# base interval so a down source stops hammering (and stops spamming logs).
+# Capped exponential backoff: after repeated failures, back off up to this
+# multiple of the base interval so a down source stops hammering (and stops
+# spamming logs). Never trips open — always keeps retrying, just less often.
 MAX_BACKOFF_MULTIPLIER = 12
 
 
@@ -99,6 +100,7 @@ async def _collector_loop(collector: Collector, base_interval: int) -> None:
 
 def start(tasks: set[asyncio.Task]) -> None:
     """Launch one supervised task per collector; caller owns cancellation."""
-    for collector, interval in build_collectors():
+    collectors = build_collectors()
+    for collector, interval in collectors:
         tasks.add(asyncio.create_task(_collector_loop(collector, interval)))
-    log.info("scheduler_started", collectors=len(tasks))
+    log.info("scheduler_started", collectors=len(collectors))

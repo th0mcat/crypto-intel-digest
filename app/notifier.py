@@ -11,7 +11,6 @@ from enum import IntEnum
 from aiogram import Bot
 from aiogram.enums import ParseMode
 
-from app.config import settings
 from app.log import log
 
 TELEGRAM_LIMIT = 4096

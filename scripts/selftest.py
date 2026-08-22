@@ -11,6 +11,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql://x@x/x")
 from app.feeds_config import high_signal, keywords  # noqa: E402
 from app.models import Event  # noqa: E402
 from app.normalise import extract_entities  # noqa: E402
+from app.notifier import _chunk  # noqa: E402
 from app import triage  # noqa: E402
 
 failures = []
@@ -72,6 +73,13 @@ check("reasons are populated", len(hot_reasons) >= 2)
 # --- novelty penalty applies ---
 repeat_score, _ = triage.score(hot, is_novel=False, high_signal=hs)
 check("repeat scores lower than novel", repeat_score < hot_score)
+
+# --- digest chunking ---
+under_limit = _chunk("x" * 4096)
+check("message at exactly 4096 stays one chunk", len(under_limit) == 1)
+one_long_line = _chunk("y" * 5000)
+check("5000-char line with no newline splits", len(one_long_line) == 2)
+check("split pieces stay under the limit", all(len(c) <= 4096 for c in one_long_line))
 
 print()
 if failures:

@@ -76,7 +76,7 @@ Working, and verified by a real self-test run (12/12 assertions):
 
 Working, exercised against real public APIs but not under a long-running deploy:
 
-- All three collectors with cursor/pagination handling, circuit breaker and exponential backoff, idempotent numbered migrations, digest formatting with HTML escaping and 4096-character chunking, structured JSON logging, operator-only access filter.
+- All three collectors with cursor/pagination handling, capped exponential backoff on failure, idempotent numbered migrations, digest formatting with HTML escaping and 4096-character chunking, structured JSON logging, operator-only access filter.
 
 Partial or unverified:
 
