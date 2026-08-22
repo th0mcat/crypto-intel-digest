@@ -1,0 +1,132 @@
+# Phase 1 source config. Edit freely and restart the bot — this is the file
+# you prune. Reputations (0-1) are starting guesses; Phase 5 tunes them from
+# outcomes. Both coverage tracks (cryptocurrency + cryptography-proper) are
+# represented from day one, per the locked decision.
+
+rss:
+  # --- cryptocurrency ---
+  - name: coindesk
+    url: https://www.coindesk.com/arc/outboundfeeds/rss/
+    reputation: 0.55
+  - name: theblock
+    url: https://www.theblock.co/rss.xml
+    reputation: 0.6
+  - name: bitcoin-optech
+    url: https://bitcoinops.org/feed.xml
+    reputation: 0.75
+  - name: ethereum-blog
+    url: https://blog.ethereum.org/en/feed.xml
+    reputation: 0.8
+  # --- regulatory ---
+  - name: sec-press
+    url: https://www.sec.gov/news/pressreleases.rss
+    reputation: 0.85
+  - name: fca-news
+    url: https://www.fca.org.uk/news/rss.xml
+    reputation: 0.85
+  # --- cryptography-proper / security ---
+  - name: nist-csrc
+    url: https://csrc.nist.gov/news/rss
+    reputation: 0.85
+  - name: project-zero
+    url: https://googleprojectzero.blogspot.com/feeds/posts/default
+    reputation: 0.8
+  - name: schneier
+    url: https://www.schneier.com/feed/atom/
+    reputation: 0.65
+  - name: ncsc-uk
+    url: https://www.ncsc.gov.uk/api/1/services/v1/all-rss-feed.xml
+    reputation: 0.8
+  # --- academic (low urgency, high novelty) ---
+  - name: arxiv-cs-cr
+    url: http://export.arxiv.org/rss/cs.CR
+    reputation: 0.6
+
+reddit:
+  # Cross-track: crypto markets + cryptography proper. Social feeds are noisy,
+  # hence low reputations — corroboration and materiality carry these.
+  - name: crypto            # r/crypto is cryptography, not coins
+    reputation: 0.5
+  - name: cryptography
+    reputation: 0.55
+  - name: netsec
+    reputation: 0.55
+  - name: ethfinance
+    reputation: 0.4
+  - name: CryptoCurrency
+    reputation: 0.3
+
+# Keyword watchlist drives materiality scoring and entity tagging. high_signal
+# terms count double. Covers both tracks.
+keywords:
+  - exploit
+  - hack
+  - depeg
+  - withdrawals
+  - halt
+  - hard fork
+  - fork
+  - upgrade
+  - governance
+  - delist
+  - insolvency
+  - bridge
+  - lawsuit
+  - sanction
+  - post-quantum
+  - PQC
+  - OpenSSL
+  - TLS
+  - RSA
+  - ECDSA
+  - side-channel
+  - collision
+  - key recovery
+  - vulnerability
+  - zero-day
+
+high_signal:
+  - exploit
+  - hack
+  - depeg
+  - insolvency
+  - zero-day
+  - key recovery
+  - post-quantum
+
+# NVD-specific gate. The general keywords above are useless for CVEs (every
+# CVE description contains "vulnerability"/"exploit"), so NVD is scoped to
+# named cryptographic primitives, libraries, and protocols instead. A CVE is
+# only ingested if its text mentions one of these. Prune/extend to your stack.
+nvd_keywords:
+  - OpenSSL
+  - LibreSSL
+  - BoringSSL
+  - GnuTLS
+  - mbedTLS
+  - wolfSSL
+  - libsodium
+  - NSS
+  - OpenSSH
+  - libssh
+  - GnuPG
+  - Bouncy Castle
+  - TLS
+  - X.509
+  - certificate validation
+  - RSA
+  - ECDSA
+  - Ed25519
+  - Curve25519
+  - AES
+  - ChaCha20
+  - SHA-1
+  - post-quantum
+  - Kyber
+  - Dilithium
+  - key recovery
+  - side-channel
+  - padding oracle
+  - nonce reuse
+  - signature forgery
+  - random number generator
