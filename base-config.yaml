@@ -1,0 +1,71 @@
+# Crypto Intel Digest — maubot plugin configuration schema.
+#
+# Copy this file to your maubot instance and edit via the management UI,
+# or supply it as the plugin's config when enabling the plugin.
+#
+# All settings here replace the former .env / pydantic-settings approach.
+# The maubot UI (https://<maubot-instance>/_matrix/maubot/) lets you edit
+# this live without restarting the whole maubot server.
+
+# --------------------------------------------------------------------------
+# Database
+# --------------------------------------------------------------------------
+# PostgreSQL connection string.  The bot uses asyncpg directly.
+# Example: ******localhost:5432/intel
+database_url: "******localhost:5432/intel"
+
+# --------------------------------------------------------------------------
+# Matrix room & access control
+# --------------------------------------------------------------------------
+# The room the bot posts digests to and listens for commands in.
+# Example: !abc123:example.org
+room_id: "!changeme:example.org"
+
+# Only this Matrix user id may issue commands; everyone else is silently ignored.
+# Example: @you:example.org
+operator_user_id: "@changeme:example.org"
+
+# --------------------------------------------------------------------------
+# Digest schedule
+# --------------------------------------------------------------------------
+# UTC hour (0–23) at which the daily brief is sent.
+digest_hour_utc: 7
+
+# --------------------------------------------------------------------------
+# Triage
+# --------------------------------------------------------------------------
+# Weighted-sum score threshold.  Items at or above this value are "kept" and
+# included in the next digest; below it they are "killed" (but retained in
+# the DB for auditability).  Range 0–1; default 0.45.
+triage_keep_threshold: 0.45
+
+# --------------------------------------------------------------------------
+# Collector intervals (seconds)
+# --------------------------------------------------------------------------
+rss_interval_seconds: 600
+reddit_interval_seconds: 300
+nvd_interval_seconds: 1800
+
+# --------------------------------------------------------------------------
+# Reddit collector
+# --------------------------------------------------------------------------
+# Create a "script" app at https://www.reddit.com/prefs/apps to get these.
+# Leave both blank to disable the Reddit collector (RSS + NVD still work).
+reddit_client_id: ""
+reddit_client_secret: ""
+reddit_user_agent: "intel-system/0.3 (by operator)"
+
+# --------------------------------------------------------------------------
+# NVD collector
+# --------------------------------------------------------------------------
+# Optional free API key — works without one at 5 req/30 s; a key raises the
+# limit to 50/30 s.  https://nvd.nist.gov/developers/request-an-api-key
+nvd_api_key: ""
+
+# --------------------------------------------------------------------------
+# Healthcheck (dead-man's switch)
+# --------------------------------------------------------------------------
+# Full ping URL from healthchecks.io (or compatible).  Leave empty to disable.
+# Example: https://hc-ping.com/your-uuid-here
+healthcheck_url: ""
+heartbeat_interval_seconds: 300

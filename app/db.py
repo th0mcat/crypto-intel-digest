@@ -17,6 +17,14 @@ async def get_pool() -> asyncpg.Pool:
     return _pool
 
 
+async def close_pool() -> None:
+    """Close the connection pool.  Called by the plugin's ``stop()`` method."""
+    global _pool
+    if _pool is not None:
+        await _pool.close()
+        _pool = None
+
+
 async def ping() -> bool:
     try:
         pool = await get_pool()

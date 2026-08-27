@@ -1,0 +1,24 @@
+maubot: 0.1.0
+id: org.example.crypto-intel-digest
+version: 0.3.0
+license: MIT
+
+# Python modules included in this plugin package.
+# The `app` package contains all business logic and the plugin entry point.
+modules:
+  - app
+
+# Fully-qualified class name of the maubot Plugin subclass.
+main_class: plugin.CryptoIntelPlugin
+
+# Tell maubot to load base-config.yaml and expose it via self.config.
+config: true
+
+# Human-readable metadata shown in the maubot management UI.
+name: Crypto Intel Digest
+description: >
+  Daily crypto/cryptography intelligence digest: polls RSS, Reddit and NVD,
+  deduplicates and scores items with a tuned heuristic, and delivers one
+  digest per day to a configured Matrix room.  Accepts operator commands
+  (!status, !sources, !kills, !digest) from a whitelisted Matrix user.
+author: th0mcat

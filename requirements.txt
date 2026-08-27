@@ -1,9 +1,14 @@
-aiogram==3.13.1
+# Runtime dependencies for the crypto-intel-digest maubot plugin.
+#
+# These are the packages needed by the business-logic modules that are
+# bundled with the plugin.  maubot itself (and mautrix, the Matrix SDK it
+# uses) are provided by the maubot server at runtime and must NOT be listed
+# here, otherwise pip may downgrade them inside the plugin virtualenv.
+#
+# Install for local development:
+#   pip install -r requirements.txt maubot
 asyncpg==0.29.0
-redis==5.0.8
-pydantic-settings==2.5.2
 structlog==24.4.0
 aiohttp==3.10.10
 feedparser==6.0.11
 PyYAML==6.0.2
-matrix-nio==0.26.0
