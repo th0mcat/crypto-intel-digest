@@ -1,19 +1,24 @@
 """Channel-agnostic notification layer.
 
-Telegram is the chosen channel (a bot can push unsolicited, richly formatted
-messages anytime — WhatsApp's Business API cannot, outside its 24h window).
-The abstraction exists so that choice stays swappable, not welded: a
-WhatsAppNotifier can be dropped in later without touching callers.
+Telegram is the primary channel.  Matrix is an optional second channel.
+Both implement the ``Notifier`` ABC so callers are unaware of which channel
+they're talking to.  When both are configured, ``CompositeNotifier`` fans
+out to all of them transparently.
 """
 from abc import ABC, abstractmethod
 from enum import IntEnum
+from typing import TYPE_CHECKING
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
 
 from app.log import log
 
+if TYPE_CHECKING:
+    import nio
+
 TELEGRAM_LIMIT = 4096
+MATRIX_LIMIT = 16384  # conservative cap; spec has no hard limit but large events are bad
 
 
 class Priority(IntEnum):
@@ -71,7 +76,42 @@ class TelegramNotifier(Notifier):
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
-        log.info("notify_sent", priority=priority.name, title=title)
+        log.info("notify_sent", channel="telegram", priority=priority.name, title=title)
+
+
+class MatrixNotifier(Notifier):
+    """Sends notifications to a Matrix room via an ``nio.AsyncClient``."""
+
+    def __init__(self, client: "nio.AsyncClient", room_id: str) -> None:
+        self._client = client
+        self._room_id = room_id
+
+    async def send(self, priority: Priority, title: str, body: str) -> None:
+        header = f"**{_PREFIX[priority]} — {title}**"
+        message = f"{header}\n\n{body}" if body else header
+        for chunk in _chunk(message, limit=MATRIX_LIMIT):
+            await self._client.room_send(
+                room_id=self._room_id,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.notice",
+                    "body": chunk,
+                },
+            )
+        log.info("notify_sent", channel="matrix", priority=priority.name, title=title)
+
+
+class CompositeNotifier(Notifier):
+    """Fan-out to multiple notifiers.  All of them receive every message."""
+
+    def __init__(self, notifiers: list[Notifier]) -> None:
+        if not notifiers:
+            raise ValueError("CompositeNotifier requires at least one Notifier")
+        self._notifiers = notifiers
+
+    async def send(self, priority: Priority, title: str, body: str) -> None:
+        for notifier in self._notifiers:
+            await notifier.send(priority, title, body)
 
 
 class WhatsAppNotifier(Notifier):
@@ -91,3 +131,4 @@ class WhatsAppNotifier(Notifier):
 
     async def send(self, priority: Priority, title: str, body: str) -> None:  # pragma: no cover
         raise NotImplementedError
+
