@@ -10,6 +10,12 @@ from app.notifier import Notifier
 
 router = Router()
 # Operator-only: every message from any other id is silently dropped.
+# This module is only imported in Telegram mode where telegram_operator_id
+# must be set; raise early rather than silently allowing all users through.
+if settings.telegram_operator_id is None:
+    raise RuntimeError(
+        "TELEGRAM_OPERATOR_ID must be set when running in Telegram mode."
+    )
 router.message.filter(F.from_user.id == settings.telegram_operator_id)
 
 

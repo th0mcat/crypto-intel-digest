@@ -104,6 +104,69 @@ tg_help = start_text("/")
 check("telegram help lists /status", "/status" in tg_help)
 check("telegram help does not list !start", "!start" not in tg_help)
 
+# --- channel_mode() selection logic ---
+from app.config import channel_mode, settings  # noqa: E402
+
+_MATRIX_FIELDS = {
+    "matrix_homeserver_url": "https://matrix.example.org",
+    "matrix_user_id": "@bot:example.org",
+    "matrix_room_id": "!abc123:example.org",
+    "matrix_access_token": "syt_token",
+}
+
+
+def _with_settings(**overrides):
+    """Temporarily patch settings fields and call channel_mode()."""
+    originals = {k: getattr(settings, k) for k in overrides}
+    for k, v in overrides.items():
+        object.__setattr__(settings, k, v)
+    try:
+        return channel_mode()
+    except RuntimeError as e:
+        return f"error:{e}"
+    finally:
+        for k, v in originals.items():
+            object.__setattr__(settings, k, v)
+
+
+# Telegram-only: token + operator id set, no Matrix vars
+check(
+    "telegram-only config → 'telegram'",
+    _with_settings(
+        telegram_bot_token="123:abc",
+        telegram_operator_id=42,
+        **{k: "" for k in _MATRIX_FIELDS},
+    ) == "telegram",
+)
+
+# Matrix-only: no Telegram vars, Matrix vars present
+check(
+    "matrix-only config → 'matrix'",
+    _with_settings(
+        telegram_bot_token="",
+        telegram_operator_id=None,
+        **_MATRIX_FIELDS,
+    ) == "matrix",
+)
+
+# Neither configured → error
+result_neither = _with_settings(
+    telegram_bot_token="",
+    telegram_operator_id=None,
+    **{k: "" for k in _MATRIX_FIELDS},
+)
+check("neither configured → RuntimeError", result_neither.startswith("error:"))
+
+# Both configured → Telegram wins (precedence rule)
+check(
+    "both configured → 'telegram' (precedence)",
+    _with_settings(
+        telegram_bot_token="123:abc",
+        telegram_operator_id=42,
+        **_MATRIX_FIELDS,
+    ) == "telegram",
+)
+
 print()
 if failures:
     raise SystemExit(f"{len(failures)} check(s) failed: {failures}")
