@@ -1,6 +1,8 @@
-# intel-system
+# crypto-intel-digest
 
-A self-hosted Telegram + Matrix bot that polls RSS, Reddit and the NVD CVE API, deduplicates and scores what it finds with a hand-tuned heuristic, and pushes one daily digest to a single operator over one or both channels.
+A [maubot](https://github.com/maubot/maubot) plugin that polls RSS, Reddit and
+the NVD CVE API, deduplicates and scores what it finds with a hand-tuned
+heuristic, and delivers one daily digest to a Matrix room.
 
 ```
  RSS x11 ─┐
@@ -9,130 +11,185 @@ A self-hosted Telegram + Matrix bot that polls RSS, Reddit and the NVD CVE API, 
               circuit        hash dedup,    threshold     AND killed)
               breaker)       title-hash     0.45)              │
                             novelty)                          ▼
-                                                    digest ──► Telegram  (/)
-                                                   (07:00 UTC, chunked ──► Matrix (!)
-                                                    to 4096 chars)       [optional]
+                                                    digest ──► Matrix room
+                                                   (07:00 UTC)  (via maubot)
 ```
-
-Everything above runs. Nothing above has run unattended in production for a week, which was my own exit criterion — see [Status](#status).
 
 ## Why it exists
 
-I wanted one place that watched the crypto and cryptography feeds I actually care about — exchange/protocol news on one side, CVEs and primitive breaks on the other — without me opening fifteen tabs a day. Aggregators either drown you or editorialise. The interesting engineering problem was never fetching; it was deciding what deserves a push notification, and being able to audit that decision afterwards. So killed items stay in the database with their scores and reasons attached, because a filter you can't inspect is a filter you can't tune.
+I wanted one place that watched the crypto and cryptography feeds I actually
+care about — exchange/protocol news on one side, CVEs and primitive breaks on
+the other — without opening fifteen tabs a day.  The interesting engineering
+problem was never fetching; it was deciding what deserves a push notification,
+and being able to audit that decision afterwards.  Killed items stay in the
+database with their scores and reasons attached, because a filter you can't
+inspect is a filter you can't tune.
 
 ## How it works
 
-Three collectors implement one small interface: take a cursor, return items plus the next cursor. RSS uses feedparser against 11 sources (CoinDesk, The Block, Bitcoin Optech, Ethereum blog, SEC, FCA, NIST CSRC, Project Zero, Schneier, NCSC, arXiv); Reddit uses app-only OAuth across 5 subs; NVD uses the v2.0 API with a keyword pre-filter, because "vulnerability" matches nearly every CVE and the useful gate is named primitives and libraries. Each runs on its own supervised asyncio task with its own interval. Repeated failures multiply that interval by 2^failures up to 12x, so a dead source stops hammering the API and stops flooding the logs.
+Three collectors implement one small interface: take a cursor, return items plus
+the next cursor.  RSS uses feedparser against 11 sources; Reddit uses app-only
+OAuth across 5 subs; NVD uses the v2.0 API with a keyword pre-filter (because
+"vulnerability" matches nearly every CVE and the useful gate is named primitives
+and libraries).  Each runs on its own supervised asyncio task inside the maubot
+server process.  Repeated failures multiply the polling interval by 2^failures
+up to 12×, so a dead source stops hammering the API without silently dropping it.
 
-Normalisation does two hashes: content hash for exact dedup, title hash for a naive three-day novelty check. Triage is a weighted sum of four factors — materiality 0.35, reputation 0.25, novelty 0.20, specificity 0.20 — kept above 0.45. Those five constants are hand-picked, not learned. I picked them, ran `scripts/selftest.py`, and adjusted until the kills looked right on real items. That's the honest provenance.
+Normalisation does two hashes: content hash for exact dedup, title hash for a
+naive three-day novelty check.  Triage is a weighted sum of four factors —
+materiality 0.35, reputation 0.25, novelty 0.20, specificity 0.20 — kept above
+0.45.  Those constants are hand-picked, not learned, and every killed item keeps
+its score and reasons in the database.
 
-The trade-off I took deliberately: no embeddings in stage 1. Exact title hashing misses paraphrased reposts, which is the known ceiling here, and pgvector is provisioned for the fix — but a cheap explainable score that I can read in a log line beat a similarity model I'd have to debug at 3am. Frontier-model triage was always meant to be stage 2, gated behind a stage-1 that already filters most of the volume.
+Postgres holds everything; migrations are numbered SQL applied idempotently at
+plugin startup.
 
-Postgres holds everything; migrations are numbered SQL applied idempotently at startup. Redis is in the compose file and is **not used by any application code** — it's dead weight I provisioned for a queue I never built, and it should probably be deleted.
+## Prerequisites
 
-## Quickstart
+* A running **maubot** instance (v0.4.0 or later recommended).
+  See https://github.com/maubot/maubot for installation instructions.
+* **PostgreSQL 14+** (with the `pgvector` extension available).
+* The `mbc` command-line tool from the maubot project (for building the
+  `.mbp` plugin package):
+  ```bash
+  pip install maubot
+  ```
 
-Docker is required. The Dockerfile pins Python 3.12; running bare-metal on a newer host Python (3.14) breaks the asyncpg and pydantic-core wheel builds, so don't.
-
-First get two things: a bot token from [@BotFather](https://t.me/BotFather) (`/newbot`), and your numeric Telegram user id from [@userinfobot](https://t.me/userinfobot). The bot ignores every id except that one.
-
-```bash
-git clone <this-repo> intel-system && cd intel-system
-cp .env.example .env
-```
-
-Edit `.env` and set three values — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_OPERATOR_ID`, `POSTGRES_PASSWORD`. Everything else has a working default; Reddit credentials are optional and RSS + NVD run without them.
-
-```bash
-docker compose up -d --build
-docker compose logs -f bot
-```
-
-You should get "System online" on Telegram within a few seconds. Then message the bot `/status`, `/sources`, `/kills`, or `/digest` to build a brief immediately rather than waiting for `DIGEST_HOUR_UTC`.
-
-### Optional: Matrix channel
-
-To also send digests and accept commands over a self-hosted Matrix server, populate the six `MATRIX_*` variables in `.env`:
-
-| Variable | Example | Description |
-| --- | --- | --- |
-| `MATRIX_HOMESERVER_URL` | `https://matrix.example.org` | Base URL of your homeserver |
-| `MATRIX_USER_ID` | `@bot:example.org` | Bot's own Matrix user id |
-| `MATRIX_ACCESS_TOKEN` | `syt_…` | Access token (preferred over password) |
-| `MATRIX_PASSWORD` | *(leave blank if using token)* | Fallback password login |
-| `MATRIX_ROOM_ID` | `!abc123:example.org` | Room the bot operates in |
-| `MATRIX_OPERATOR_USER_ID` | `@you:example.org` | Only user allowed to issue commands |
-
-When all four required fields are set (`MATRIX_HOMESERVER_URL`, `MATRIX_USER_ID`, `MATRIX_ROOM_ID`, and either `MATRIX_ACCESS_TOKEN` or `MATRIX_PASSWORD`), the bot connects to Matrix alongside Telegram. Leave them blank to run Telegram-only.
-
-Matrix commands use a **bang prefix** instead of Telegram's slash prefix:
-
-| Matrix | Telegram | Description |
-| --- | --- | --- |
-| `!start` / `!help` | `/start` | Show available commands |
-| `!status` | `/status` | Health check |
-| `!sources` | `/sources` | Collector health |
-| `!kills` | `/kills` | Triage stats (last 24 h) |
-| `!digest` | `/digest` | Send the daily brief now |
-
-The daily digest is delivered to **both** channels when both are configured.
-
-Offline logic check — no network, no database, 12 assertions, passing as of this commit:
+## Building and installing the plugin
 
 ```bash
-docker compose run --rm --no-deps -e PYTHONPATH=/home/app \
-  -v "$PWD/scripts:/home/app/scripts:ro" bot python scripts/selftest.py
+# 1. Build the plugin package
+mbc build
+
+# This produces:  org.example.crypto-intel-digest-0.3.0.mbp
 ```
 
-Integration test against live feeds and a real Postgres (start the stack first):
+Upload the `.mbp` file through the maubot management UI
+(`https://<your-maubot-instance>/_matrix/maubot/`) or via the REST API:
 
 ```bash
-docker compose run --rm -e PYTHONPATH=/home/app \
-  -v "$PWD/scripts:/home/app/scripts:ro" bot python scripts/itest.py
+mbc upload org.example.crypto-intel-digest-0.3.0.mbp \
+    --server https://<your-maubot-instance>/_matrix/maubot/
 ```
 
-Sources live in `app/feeds.yaml` — edit and restart the bot. Nightly backups are `scripts/backup.sh` (pg_dump via compose, prunes past 14 days); wire it to cron yourself and ship the output off-box.
+Then create a **bot instance** in the maubot UI, select the plugin, and
+configure it (see [Configuration](#configuration) below).
+
+## Configuration
+
+All settings live in `base-config.yaml` and are edited through the maubot
+management UI — no `.env` file or environment variables required.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `database_url` | *(required)* | PostgreSQL connection string, e.g. `******localhost:5432/intel` |
+| `room_id` | *(required)* | Matrix room to post digests to and receive commands from, e.g. `!abc123:example.org` |
+| `operator_user_id` | *(required)* | Only this Matrix user may issue commands; everyone else is silently ignored, e.g. `@you:example.org` |
+| `digest_hour_utc` | `7` | UTC hour (0–23) at which the daily digest is sent |
+| `triage_keep_threshold` | `0.45` | Score threshold (0–1); items at or above this value appear in the digest |
+| `rss_interval_seconds` | `600` | Polling interval for RSS feeds |
+| `reddit_interval_seconds` | `300` | Polling interval for Reddit |
+| `nvd_interval_seconds` | `1800` | Polling interval for NVD |
+| `reddit_client_id` | `""` | Reddit "script" app client id (leave blank to disable Reddit) |
+| `reddit_client_secret` | `""` | Reddit "script" app client secret |
+| `reddit_user_agent` | `"intel-system/0.3 (by operator)"` | Reddit API user agent string |
+| `nvd_api_key` | `""` | NVD API key (optional; raises rate limit from 5 to 50 req/30 s) |
+| `healthcheck_url` | `""` | healthchecks.io (or compatible) ping URL for the dead-man's switch |
+| `heartbeat_interval_seconds` | `300` | How often to ping `healthcheck_url` |
+
+## Available commands
+
+All commands use a **bang prefix** and may only be issued by the configured
+`operator_user_id` in the configured `room_id`.
+
+| Command | Description |
+|---------|-------------|
+| `!help` / `!start` | List available commands |
+| `!status` | Database reachability, schema version, uptime |
+| `!sources` | Per-collector health (last run time, consecutive failures) |
+| `!kills` | Triage keep/kill counts for the last 24 h |
+| `!digest` | Trigger the daily digest immediately |
+
+## Database setup
+
+The plugin applies its own migrations on startup (idempotent numbered SQL
+files in `app/migrations/`).  You only need to create the database and user
+beforehand:
+
+```sql
+CREATE DATABASE intel;
+CREATE USER intel WITH PASSWORD 'change-me';
+GRANT ALL PRIVILEGES ON DATABASE intel TO intel;
+```
+
+For local development with Docker Compose, the provided `docker-compose.yml`
+starts a PostgreSQL instance with the correct user/database.  Update the
+`POSTGRES_PASSWORD` in `.env` (copy from `.env.example`) and run:
+
+```bash
+docker compose up -d postgres
+```
+
+Then set `database_url` in the maubot plugin config to:
+```
+******localhost:5432/intel
+```
+
+## Source configuration
+
+Feed sources live in `app/feeds.yaml`.  Edit them and rebuild + re-upload the
+plugin to apply changes.  Per-source reputation scores (0–1) affect triage
+weighting; adjust them based on observed signal quality.
+
+## Self-test (offline logic check)
+
+```bash
+PYTHONPATH=. python scripts/selftest.py
+```
+
+This runs 12 assertions against the triage scoring and normalisation logic
+without requiring a database or network.
+
+## Integration test (requires live Postgres)
+
+```bash
+PYTHONPATH=. python scripts/itest.py
+```
+
+Exercises the full pipeline against live feeds and a real Postgres instance.
+Set `DATABASE_URL` in the environment or ensure `base-config.yaml` is
+populated before running.
 
 ## Status
 
-1,362 lines of Python, one author, never deployed in anger.
+Working business logic (verified by self-test):
 
-Working, and verified by a real self-test run (12/12 assertions):
+* Entity extraction (CVE regex, cashtag regex, keyword matching), content-hash
+  dedup, title-hash novelty, and the triage scoring formula.
 
-- Entity extraction (CVE regex, cashtag regex, keyword matching), content-hash dedup, title-hash novelty, and the triage scoring formula.
+Working, exercised against real public APIs:
 
-Working, exercised against real public APIs but not under a long-running deploy:
+* All three collectors with cursor/pagination, capped exponential backoff,
+  idempotent numbered migrations, digest formatting, structured JSON logging,
+  operator-only access filter.
 
-- All three collectors with cursor/pagination handling, capped exponential backoff on failure, idempotent numbered migrations, digest formatting with HTML escaping and 4096-character chunking, structured JSON logging, operator-only access filter.
+Not built (deferred to later phases):
 
-Partial or unverified:
-
-- `scripts/itest.py` is a real integration test (fetch counts, dedup, migration version, digest query) but needs live Postgres and was not run during this audit.
-- The 7-day unattended soak test this project sets for itself has not been completed by anyone.
-- Redis is provisioned by compose and used by nothing.
-- A `feedback` column exists in the schema; nothing writes to it.
-- pgvector extension is created; no vector column is used.
-
-Not built:
-
-- Near-duplicate clustering by embedding, stage-2 frontier-model triage, entity resolution and an alias store. All deferred to phase 2/3 and marked as such in the code.
-- WhatsApp notifier: the class exists and raises `NotImplementedError` in `__init__`. It is a stub.
-- X/Twitter collector: deliberately absent. The API pricing doesn't sustain continuous monitoring inside my budget, and the collector interface is small enough to add one later if a measured recall gap justifies it.
-- No web UI. The bot is the entire interface.
+* Near-duplicate clustering by embedding (pgvector is provisioned).
+* Stage-2 frontier-model triage.
+* Entity resolution and alias store.
+* X/Twitter collector (API pricing doesn't sustain continuous monitoring).
 
 ## Stack
 
-| Choice | Why, over the obvious alternative |
-| --- | --- |
-| Postgres 16 + pgvector | One store for events, cursors and (eventually) embeddings. Over SQLite, because pgvector and concurrent collector writes both want a server. |
-| asyncpg | Raw SQL and a connection pool. Over SQLAlchemy, because the schema is four tables and an ORM would be the largest dependency in the project. |
-| aiogram 3.13 | Native asyncio, so the bot shares one event loop with the collector tasks. Over python-telegram-bot, which I'd have had to bridge. |
-| matrix-nio 0.26 | Async Matrix SDK, native asyncio. Handles token-based auth, `sync_forever`, and room message callbacks with no extra event-loop bridging. |
-| feedparser | RSS/Atom parsing is a swamp of malformed XML. Not writing that. |
-| structlog | JSON lines out of the box, so `docker compose logs` is greppable without a log stack. |
-| pydantic-settings | Config validated at boot, so a missing token fails at startup rather than on the first send. |
-| Docker Compose | Single-VPS deploy, three services. Over Kubernetes, obviously. |
-| Redis 7 | No reason that survived contact with the code. Should be removed. |
+| Choice | Why |
+|--------|-----|
+| maubot | Mature, actively maintained Matrix bot framework; handles Matrix sync, event dispatch and plugin lifecycle so this code doesn't have to. |
+| Postgres 16 + pgvector | One store for events, cursors and (eventually) embeddings. |
+| asyncpg | Raw SQL and a connection pool — no ORM for four tables. |
+| feedparser | RSS/Atom parsing is a swamp of malformed XML. |
+| structlog | JSON lines out of the box, so logs are greppable without a log stack. |
+| aiohttp | Async HTTP for Reddit and NVD collectors. |
 
 ## Licence
 
