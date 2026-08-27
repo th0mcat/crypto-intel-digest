@@ -1,9 +1,14 @@
+from __future__ import annotations
+
+from typing import Literal
+
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    telegram_bot_token: str
-    telegram_operator_id: int
+    # Telegram credentials — leave blank when running in Matrix mode.
+    telegram_bot_token: str = ""
+    telegram_operator_id: int | None = None
     database_url: str
     redis_url: str = "redis://redis:6379/0"
     healthcheck_url: str = ""
@@ -46,3 +51,36 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def channel_mode() -> Literal["telegram", "matrix"]:
+    """Return the active channel mode based on which credentials are set.
+
+    Precedence rule (documented):
+      1. If Telegram credentials are fully configured (non-empty token AND
+         non-None operator id), use Telegram — it is the original default
+         channel and takes priority when both sets of vars are present.
+      2. Else if the minimum Matrix credentials are set (homeserver URL,
+         user id, room id, and at least one of access token or password),
+         use Matrix.
+      3. Otherwise raise RuntimeError: the operator must configure exactly
+         one channel before starting.
+    """
+    s = settings
+    telegram_ok = bool(s.telegram_bot_token and s.telegram_operator_id is not None)
+    matrix_ok = bool(
+        s.matrix_homeserver_url
+        and s.matrix_user_id
+        and s.matrix_room_id
+        and (s.matrix_access_token or s.matrix_password)
+    )
+
+    if telegram_ok:
+        return "telegram"
+    if matrix_ok:
+        return "matrix"
+    raise RuntimeError(
+        "No channel configured. Set TELEGRAM_BOT_TOKEN + TELEGRAM_OPERATOR_ID "
+        "for Telegram mode, or MATRIX_HOMESERVER_URL + MATRIX_USER_ID + "
+        "MATRIX_ROOM_ID + MATRIX_ACCESS_TOKEN (or MATRIX_PASSWORD) for Matrix mode."
+    )

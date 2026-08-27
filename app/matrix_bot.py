@@ -23,20 +23,17 @@ from app.commands import (
     start_text,
     status_text,
 )
-from app.config import settings
+from app.config import channel_mode, settings
 from app.log import log
 from app.notifier import MATRIX_LIMIT, Notifier
 
 
 def matrix_enabled() -> bool:
-    """Return True when all required Matrix settings are populated."""
-    s = settings
-    return bool(
-        s.matrix_homeserver_url
-        and s.matrix_user_id
-        and s.matrix_room_id
-        and (s.matrix_access_token or s.matrix_password)
-    )
+    """Return True when the active channel mode is Matrix."""
+    try:
+        return channel_mode() == "matrix"
+    except RuntimeError:
+        return False
 
 
 async def _send_notice(client: nio.AsyncClient, room_id: str, text: str) -> None:
@@ -110,33 +107,45 @@ async def _handle_message(
     await _send_notice(client, room_id, text)
 
 
-async def run_matrix_bot(notifier: Notifier) -> None:
-    """Long-running Matrix sync loop.  Designed to run as an asyncio task."""
+async def run_matrix_bot(
+    notifier: Notifier, client: nio.AsyncClient | None = None
+) -> None:
+    """Long-running Matrix sync loop.  Designed to run as an asyncio task.
+
+    If *client* is provided it must already be authenticated; ``run_matrix_bot``
+    will register the message callback and start ``sync_forever`` without
+    performing login or closing the client (the caller owns the lifecycle).
+    If *client* is None (legacy / standalone usage) this function creates,
+    authenticates, and closes its own client.
+    """
     if not matrix_enabled():
         log.warning("matrix_disabled", reason="required Matrix settings not set")
         return
 
-    client = nio.AsyncClient(settings.matrix_homeserver_url, settings.matrix_user_id)
+    caller_owns_client = client is not None
+    if client is None:
+        client = nio.AsyncClient(settings.matrix_homeserver_url, settings.matrix_user_id)
 
     try:
-        # Authenticate: token preferred, password as fallback.
-        if settings.matrix_access_token:
-            client.access_token = settings.matrix_access_token
-            client.user_id = settings.matrix_user_id
-            log.info("matrix_authenticated", method="token", user=settings.matrix_user_id)
-        else:
-            resp = await client.login(settings.matrix_password)
-            if isinstance(resp, nio.LoginError):
-                log.error("matrix_login_failed", error=str(resp))
-                return
-            log.info("matrix_authenticated", method="password", user=settings.matrix_user_id)
+        if not caller_owns_client:
+            # Authenticate: token preferred, password as fallback.
+            if settings.matrix_access_token:
+                client.access_token = settings.matrix_access_token
+                client.user_id = settings.matrix_user_id
+                log.info("matrix_authenticated", method="token", user=settings.matrix_user_id)
+            else:
+                resp = await client.login(settings.matrix_password)
+                if isinstance(resp, nio.LoginError):
+                    log.error("matrix_login_failed", error=str(resp))
+                    return
+                log.info("matrix_authenticated", method="password", user=settings.matrix_user_id)
 
         # Register message callback.
         async def _on_message(
             room: nio.MatrixRoom, event: nio.RoomMessageText
         ) -> None:
             try:
-                await _handle_message(client, room, event, notifier)
+                await _handle_message(client, room, event, notifier)  # type: ignore[arg-type]
             except Exception as exc:
                 log.error("matrix_handler_error", error=str(exc))
 
@@ -150,5 +159,6 @@ async def run_matrix_bot(notifier: Notifier) -> None:
     except Exception as exc:
         log.error("matrix_loop_error", error=str(exc))
     finally:
-        await client.close()
+        if not caller_owns_client:
+            await client.close()
         log.info("matrix_client_closed")
