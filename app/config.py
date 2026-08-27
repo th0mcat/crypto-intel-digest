@@ -19,6 +19,18 @@ class Settings(BaseSettings):
     # https://nvd.nist.gov/developers/request-an-api-key
     nvd_api_key: str = ""
 
+    # Matrix integration (all four fields must be set to enable Matrix).
+    # Bot account: create a Matrix user on your homeserver and generate an
+    # access token (Element → Settings → Help & About → Access Token).
+    matrix_homeserver_url: str = ""
+    matrix_user_id: str = ""          # e.g. @bot:example.org
+    matrix_access_token: str = ""
+    matrix_room_id: str = ""          # e.g. !abc123:example.org
+    # Optional fallback if no access token is available (token preferred).
+    matrix_password: str = ""
+    # Only this Matrix user id may issue commands; everyone else is ignored.
+    matrix_operator_user_id: str = ""
+
     # Daily P2 digest send time, UTC hour (0-23).
     digest_hour_utc: int = 7
 

@@ -1,6 +1,6 @@
 # intel-system
 
-A self-hosted Telegram bot that polls RSS, Reddit and the NVD CVE API, deduplicates and scores what it finds with a hand-tuned heuristic, and pushes one daily digest to a single operator.
+A self-hosted Telegram + Matrix bot that polls RSS, Reddit and the NVD CVE API, deduplicates and scores what it finds with a hand-tuned heuristic, and pushes one daily digest to a single operator over one or both channels.
 
 ```
  RSS x11 ─┐
@@ -8,10 +8,10 @@ A self-hosted Telegram bot that polls RSS, Reddit and the NVD CVE API, deduplica
  NVD CVE ─┘  (cursor +      (content-      (4 weights,   (events: kept
               circuit        hash dedup,    threshold     AND killed)
               breaker)       title-hash     0.45)              │
-                             novelty)                          ▼
-                                                     digest ──► Telegram
-                                                    (07:00 UTC, chunked
-                                                     to 4096 chars)
+                            novelty)                          ▼
+                                                    digest ──► Telegram  (/)
+                                                   (07:00 UTC, chunked ──► Matrix (!)
+                                                    to 4096 chars)       [optional]
 ```
 
 Everything above runs. Nothing above has run unattended in production for a week, which was my own exit criterion — see [Status](#status).
@@ -49,6 +49,33 @@ docker compose logs -f bot
 ```
 
 You should get "System online" on Telegram within a few seconds. Then message the bot `/status`, `/sources`, `/kills`, or `/digest` to build a brief immediately rather than waiting for `DIGEST_HOUR_UTC`.
+
+### Optional: Matrix channel
+
+To also send digests and accept commands over a self-hosted Matrix server, populate the six `MATRIX_*` variables in `.env`:
+
+| Variable | Example | Description |
+| --- | --- | --- |
+| `MATRIX_HOMESERVER_URL` | `https://matrix.example.org` | Base URL of your homeserver |
+| `MATRIX_USER_ID` | `@bot:example.org` | Bot's own Matrix user id |
+| `MATRIX_ACCESS_TOKEN` | `syt_…` | Access token (preferred over password) |
+| `MATRIX_PASSWORD` | *(leave blank if using token)* | Fallback password login |
+| `MATRIX_ROOM_ID` | `!abc123:example.org` | Room the bot operates in |
+| `MATRIX_OPERATOR_USER_ID` | `@you:example.org` | Only user allowed to issue commands |
+
+When all four required fields are set (`MATRIX_HOMESERVER_URL`, `MATRIX_USER_ID`, `MATRIX_ROOM_ID`, and either `MATRIX_ACCESS_TOKEN` or `MATRIX_PASSWORD`), the bot connects to Matrix alongside Telegram. Leave them blank to run Telegram-only.
+
+Matrix commands use a **bang prefix** instead of Telegram's slash prefix:
+
+| Matrix | Telegram | Description |
+| --- | --- | --- |
+| `!start` / `!help` | `/start` | Show available commands |
+| `!status` | `/status` | Health check |
+| `!sources` | `/sources` | Collector health |
+| `!kills` | `/kills` | Triage stats (last 24 h) |
+| `!digest` | `/digest` | Send the daily brief now |
+
+The daily digest is delivered to **both** channels when both are configured.
 
 Offline logic check — no network, no database, 12 assertions, passing as of this commit:
 
@@ -100,6 +127,7 @@ Not built:
 | Postgres 16 + pgvector | One store for events, cursors and (eventually) embeddings. Over SQLite, because pgvector and concurrent collector writes both want a server. |
 | asyncpg | Raw SQL and a connection pool. Over SQLAlchemy, because the schema is four tables and an ORM would be the largest dependency in the project. |
 | aiogram 3.13 | Native asyncio, so the bot shares one event loop with the collector tasks. Over python-telegram-bot, which I'd have had to bridge. |
+| matrix-nio 0.26 | Async Matrix SDK, native asyncio. Handles token-based auth, `sync_forever`, and room message callbacks with no extra event-loop bridging. |
 | feedparser | RSS/Atom parsing is a swamp of malformed XML. Not writing that. |
 | structlog | JSON lines out of the box, so `docker compose logs` is greppable without a log stack. |
 | pydantic-settings | Config validated at boot, so a missing token fails at startup rather than on the first send. |
