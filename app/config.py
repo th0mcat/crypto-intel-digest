@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    # Explicit channel selection. Set MODE=telegram or MODE=matrix in .env.
+    # This takes precedence over any presence-based inference.
+    mode: Literal["telegram", "matrix"] = "telegram"
+
     # Telegram credentials — leave blank when running in Matrix mode.
     telegram_bot_token: str = ""
     telegram_operator_id: int | None = None
@@ -49,38 +54,51 @@ class Settings(BaseSettings):
     reddit_interval_seconds: int = 300
     nvd_interval_seconds: int = 1800
 
+    @field_validator("telegram_operator_id", mode="before")
+    @classmethod
+    def _blank_operator_id_to_none(cls, v):
+        """Treat an unset/blank TELEGRAM_OPERATOR_ID as None instead of
+        letting pydantic try (and fail) to parse "" as an int."""
+        if v is None:
+            return None
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
+
 
 settings = Settings()
 
 
 def channel_mode() -> Literal["telegram", "matrix"]:
-    """Return the active channel mode based on which credentials are set.
+    """Return the active channel mode based on the explicit `mode` setting.
 
-    Precedence rule (documented):
-      1. If Telegram credentials are fully configured (non-empty token AND
-         non-None operator id), use Telegram — it is the original default
-         channel and takes priority when both sets of vars are present.
-      2. Else if the minimum Matrix credentials are set (homeserver URL,
-         user id, room id, and at least one of access token or password),
-         use Matrix.
-      3. Otherwise raise RuntimeError: the operator must configure exactly
-         one channel before starting.
+    The operator selects the channel explicitly via MODE=telegram|matrix in
+    .env. This function validates that the required credentials for the
+    selected mode are present and raises a clear error otherwise.
     """
     s = settings
-    telegram_ok = bool(s.telegram_bot_token and s.telegram_operator_id is not None)
-    matrix_ok = bool(
-        s.matrix_homeserver_url
-        and s.matrix_user_id
-        and s.matrix_room_id
-        and (s.matrix_access_token or s.matrix_password)
-    )
 
-    if telegram_ok:
-        return "telegram"
-    if matrix_ok:
-        return "matrix"
-    raise RuntimeError(
-        "No channel configured. Set TELEGRAM_BOT_TOKEN + TELEGRAM_OPERATOR_ID "
-        "for Telegram mode, or MATRIX_HOMESERVER_URL + MATRIX_USER_ID + "
-        "MATRIX_ROOM_ID + MATRIX_ACCESS_TOKEN (or MATRIX_PASSWORD) for Matrix mode."
-    )
+    if s.mode == "telegram":
+        if s.telegram_bot_token and s.telegram_operator_id is not None:
+            return "telegram"
+        raise RuntimeError(
+            "MODE=telegram but TELEGRAM_BOT_TOKEN and/or TELEGRAM_OPERATOR_ID "
+            "are not set. Configure both in .env, or set MODE=matrix instead."
+        )
+
+    if s.mode == "matrix":
+        matrix_ok = bool(
+            s.matrix_homeserver_url
+            and s.matrix_user_id
+            and s.matrix_room_id
+            and (s.matrix_access_token or s.matrix_password)
+        )
+        if matrix_ok:
+            return "matrix"
+        raise RuntimeError(
+            "MODE=matrix but required Matrix credentials are missing. Set "
+            "MATRIX_HOMESERVER_URL + MATRIX_USER_ID + MATRIX_ROOM_ID + "
+            "MATRIX_ACCESS_TOKEN (or MATRIX_PASSWORD) in .env."
+        )
+
+    raise RuntimeError(f"Unknown MODE '{s.mode}'. Use 'telegram' or 'matrix'.")
